@@ -145,17 +145,38 @@ export function AuthProvider({ children }) {
   }
 
   async function signIn({ email, password }) {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) throw error;
-    return data;
+  console.log("========== LOGIN ATTEMPT ==========");
+  console.log("Email:", email);
+
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
+
+  console.log("========== LOGIN RESPONSE ==========");
+  console.log("Data:", JSON.stringify(data, null, 2));
+  console.log("Error:", error);
+
+  if (error) {
+    console.error("Supabase Login Error:", error);
+    throw error;
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    setUser(null);
-    setProfile(null);
+  console.log("========== LOGIN SUCCESS ==========");
+  return data;
+}
+
+async function signOut() {
+  const { error } = await supabase.auth.signOut();
+
+  if (error) {
+    console.error("SIGN OUT ERROR:", error);
+    throw error;
   }
 
+  setUser(null);
+  setProfile(null);
+}
   /* ── Get a signed URL for a private document (for admin viewing) ─────────
    * Generates a 60-minute signed URL for a document stored in tutor-documents.
    */
