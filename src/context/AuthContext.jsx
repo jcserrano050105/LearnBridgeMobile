@@ -8,7 +8,6 @@ export function AuthProvider({ children }) {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  /* ── Bootstrap session from Supabase ── */
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
@@ -19,7 +18,10 @@ export function AuthProvider({ children }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
       if (session?.user) fetchProfile(session.user.id);
-      else { setProfile(null); setLoading(false); }
+      else {
+        setProfile(null);
+        setLoading(false);
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -35,17 +37,11 @@ export function AuthProvider({ children }) {
     setLoading(false);
   }
 
-  /* ── Upload a single PDF to Supabase Storage ──────────────────────────────
-   * Path: tutor-documents/{userId}/{filename}
-   * Returns the public/signed URL for storing in the tutors table.
-   */
   async function uploadTutorDocument(userId, file, docType) {
     if (!file) return null;
-
     const ext      = 'pdf';
     const filename = `${docType}_${Date.now()}.${ext}`;
     const path     = `${userId}/${filename}`;
-
     const { error: uploadError } = await supabase.storage
       .from('tutor-documents')
       .upload(path, file, {
@@ -53,27 +49,16 @@ export function AuthProvider({ children }) {
         cacheControl: '3600',
         upsert:       true,
       });
-
     if (uploadError) throw new Error(`Failed to upload ${docType}: ${uploadError.message}`);
-
-    // Return the storage path — we use signed URLs when admin views them
     return path;
   }
 
-  /* ── Sign Up ──────────────────────────────────────────────────────────────
-   * For parents: creates auth user + profile row.
-   * For tutors:  creates auth user + profile row + uploads 3 PDFs to Storage
-   *              + creates tutors row with pending status and document paths.
-   */
   async function signUp({
     email, password, fullName, role,
-    // Tutor-specific
     location, gender, bio,
     yearsExperience, ratePerSession, specialization,
-    // Document files (File objects)
     nbiFile, prcFile, medicalFile,
   }) {
-    // ── 1. Create auth user ─────────────────────────────────────────────
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
@@ -84,7 +69,6 @@ export function AuthProvider({ children }) {
 
     const userId = data.user.id;
 
-    // ── 2. Insert profile row ───────────────────────────────────────────
     const { error: profileError } = await supabase
       .from('profiles')
       .insert({
@@ -102,25 +86,21 @@ export function AuthProvider({ children }) {
       throw new Error(`Account created but profile setup failed: ${profileError.message}`);
     }
 
-    // ── 3. Tutor-specific: upload documents + create tutors row ─────────
     if (role === 'tutor') {
       let nbiPath     = null;
       let prcPath     = null;
       let medicalPath = null;
 
       try {
-        // Upload all three documents in parallel
         [nbiPath, prcPath, medicalPath] = await Promise.all([
           uploadTutorDocument(userId, nbiFile,     'nbi'),
           uploadTutorDocument(userId, prcFile,     'prc'),
           uploadTutorDocument(userId, medicalFile, 'medical'),
         ]);
       } catch (uploadErr) {
-        // If uploads fail, we still have the profile — inform the user
         throw new Error(`Documents failed to upload: ${uploadErr.message}. Your account was created — please contact support to resubmit documents.`);
       }
 
-      // Insert tutors row with document paths and pending status
       const { error: tutorError } = await supabase
         .from('tutors')
         .insert({
@@ -131,7 +111,7 @@ export function AuthProvider({ children }) {
           nbi_clearance_url:   nbiPath,
           prc_license_url:     prcPath,
           medical_cert_url:    medicalPath,
-          status:              'pending',   // Admin must approve before activation
+          status:              'pending',
           wallet_balance:      0,
         });
 
@@ -145,46 +125,31 @@ export function AuthProvider({ children }) {
   }
 
   async function signIn({ email, password }) {
-  console.log("========== LOGIN ATTEMPT ==========");
-  console.log("Email:", email);
-
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email,
-    password,
-  });
-
-  console.log("========== LOGIN RESPONSE ==========");
-  console.log("Data:", JSON.stringify(data, null, 2));
-  console.log("Error:", error);
-
-  if (error) {
-    console.error("Supabase Login Error:", error);
-    throw error;
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    return data;
   }
 
-  console.log("========== LOGIN SUCCESS ==========");
-  return data;
-}
+  // ── Sign out — clear state immediately so _layout.tsx redirects ──
+  async function signOut() {
+    // Clear state first BEFORE calling supabase signOut
+    // This ensures RootNavigator detects user = null immediately
+    setUser(null);
+    setProfile(null);
+    setLoading(false);
 
-async function signOut() {
-  const { error } = await supabase.auth.signOut();
-
-  if (error) {
-    console.error("SIGN OUT ERROR:", error);
-    throw error;
+    try {
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.error("SIGN OUT ERROR:", error);
+    }
   }
 
-  setUser(null);
-  setProfile(null);
-}
-  /* ── Get a signed URL for a private document (for admin viewing) ─────────
-   * Generates a 60-minute signed URL for a document stored in tutor-documents.
-   */
   async function getDocumentSignedUrl(storagePath) {
     if (!storagePath) return null;
     const { data, error } = await supabase.storage
       .from('tutor-documents')
-      .createSignedUrl(storagePath, 60 * 60); // 1 hour expiry
+      .createSignedUrl(storagePath, 60 * 60);
     if (error) { console.error('Signed URL error:', error); return null; }
     return data.signedUrl;
   }
