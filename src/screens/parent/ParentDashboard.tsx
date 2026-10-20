@@ -8,6 +8,7 @@ import { useRouter } from "expo-router";
 import Header from "../../components/Header";
 import { useAuth } from "../../context/AuthContext";
 import useParentDashboard from "../../hooks/useParentDashboard";
+import { useGreeting } from "../../hooks/useGreeting";
 
 const PRIMARY    = "#3D3BF3";
 const PRIMARY_BG = "#EBEBFF";
@@ -75,12 +76,7 @@ export default function ParentDashboard() {
 
   const firstName = profile?.full_name?.split(" ")[0] || "Parent";
 
-  const getGreeting = () => {
-    const h = new Date().getHours();
-    if (h < 12) return "Good Morning";
-    if (h < 18) return "Good Afternoon";
-    return "Good Evening";
-  };
+  const greeting = useGreeting();
 
   if (loading) {
     return (
@@ -117,7 +113,7 @@ export default function ParentDashboard() {
         refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} tintColor={PRIMARY} />}
       >
         {/* ── Welcome ── */}
-        <Text style={styles.greeting}>{getGreeting()}, {firstName} 👋</Text>
+        <Text style={styles.greeting}>{greeting}, {firstName} 👋</Text>
         <Text style={styles.subtitle}>Here's an overview of your children's learning progress.</Text>
 
         {/* ── Stats ── */}
@@ -194,7 +190,7 @@ export default function ParentDashboard() {
 }
 
 const styles = StyleSheet.create({
-  container:    { flex: 1, backgroundColor: BG },
+  container:    { flex: 1, backgroundColor: "transparent" },
   content:      { padding: 16, paddingBottom: 100 },
   centered:     { flex: 1, justifyContent: "center", alignItems: "center", padding: 24 },
   retryBtn:     { backgroundColor: PRIMARY, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },

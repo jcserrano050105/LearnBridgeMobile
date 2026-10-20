@@ -7,6 +7,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "../../lib/supabase";
 import Header from "../../components/Header";
+import SessionModules from "../../components/SessionModules";
+import StudentProgress from "../../components/StudentProgress";
+import ZoomMeeting from "../../components/ZoomMeeting";
+import SessionAnnouncements from "../../components/SessionAnnouncements";
 
 const PRIMARY    = "#3D3BF3";
 const PRIMARY_BG = "#EBEBFF";
@@ -29,6 +33,16 @@ const PERF = [
   { v: "needs_improvement",l: "Needs Improvement", color: CORAL,  bg: CORAL_BG  },
 ];
 
+// Website tabs: Sessions & Quizzes · Student Progress · Video Meeting (+ announcements); app keeps Session Logs
+type TabKey = "modules" | "progress" | "video" | "announcements" | "logs";
+const TABS: [TabKey, string][] = [
+  ["modules",       "📚 Modules"],
+  ["progress",      "📊 Progress"],
+  ["video",         "🎥 Video"],
+  ["announcements", "📢 Announcements"],
+  ["logs",          "📝 Logs"],
+];
+
 function subjectLabel(s: string) {
   return s === "both" ? "English & Math" : s === "english" ? "English" : s === "mathematics" ? "Mathematics" : s;
 }
@@ -43,6 +57,7 @@ export default function TutorSessionsScreen() {
   const [saving,       setSaving]       = useState<string | null>(null);
   const [loading,      setLoading]      = useState(true);
   const [error,        setError]        = useState<string | null>(null);
+  const [tabs,         setTabs]         = useState<Record<string, TabKey>>({});
 
   // ── Fetch all confirmed bookings + their sessions ───────────
   const fetchData = useCallback(async () => {
@@ -214,8 +229,37 @@ export default function TutorSessionsScreen() {
                   <View style={[s.progressFill, { width: `${(completedCount / TOTAL_SESSIONS) * 100}%` as any }]} />
                 </View>
 
-                {/* Sessions list */}
+                {/* Tabs: Modules (website parity) | Session Logs */}
                 {isExpanded && (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.tabRow}>
+                    {TABS.map(([key, label]) => {
+                      const on = (tabs[b.id] || "modules") === key;
+                      return (
+                        <TouchableOpacity key={key} style={[s.tabBtn, on && s.tabBtnOn]} onPress={() => setTabs(t => ({ ...t, [b.id]: key }))}>
+                          <Text style={[s.tabTxt, on && s.tabTxtOn]}>{label}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                )}
+
+                {isExpanded && (tabs[b.id] || "modules") === "modules" && (
+                  <View style={{ padding: 14 }}>
+                    <SessionModules bookingId={b.id} mode="tutor" tutorId={user?.id} />
+                  </View>
+                )}
+                {isExpanded && tabs[b.id] === "progress" && (
+                  <View style={{ padding: 14 }}><StudentProgress bookingId={b.id} /></View>
+                )}
+                {isExpanded && tabs[b.id] === "video" && (
+                  <View style={{ padding: 14 }}><ZoomMeeting booking={b} isTutor /></View>
+                )}
+                {isExpanded && tabs[b.id] === "announcements" && (
+                  <View style={{ padding: 14 }}><SessionAnnouncements bookingId={b.id} mode="tutor" tutorId={user?.id} /></View>
+                )}
+
+                {/* Sessions list */}
+                {isExpanded && tabs[b.id] === "logs" && (
                   <View style={s.sessionsList}>
                     {Array.from({ length: TOTAL_SESSIONS }, (_, i) => i + 1).map(num => {
                       const existing  = sessionMap[num];
@@ -303,7 +347,7 @@ export default function TutorSessionsScreen() {
 }
 
 const s = StyleSheet.create({
-  container:  { flex: 1, backgroundColor: BG },
+  container:  { flex: 1, backgroundColor: "transparent" },
   content:    { padding: 16, paddingBottom: 80 },
   centered:   { flex: 1, justifyContent: "center", alignItems: "center" },
   heading:    { fontSize: 22, fontWeight: "800", color: DARK, marginBottom: 4 },
@@ -324,6 +368,12 @@ const s = StyleSheet.create({
   progressTxt:    { fontSize: 11, fontWeight: "700", color: PRIMARY },
   progressBar:    { height: 4, backgroundColor: "#E5E7EB", marginHorizontal: 14 },
   progressFill:   { height: 4, backgroundColor: PRIMARY, borderRadius: 2 },
+
+  tabRow:         { flexDirection: "row", gap: 6, paddingHorizontal: 14, paddingTop: 12 },
+  tabBtn:         { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, alignItems: "center", backgroundColor: "#F3F4F6" },
+  tabBtnOn:       { backgroundColor: PRIMARY_BG },
+  tabTxt:         { fontSize: 12, color: MUTED, fontWeight: "600" },
+  tabTxtOn:       { color: PRIMARY, fontWeight: "700" },
 
   sessionsList:   { padding: 14, gap: 4 },
   sessionItem:    { backgroundColor: "#F9FAFB", borderRadius: 12, borderWidth: 1, borderColor: BORDER, padding: 14, marginBottom: 12 },

@@ -365,7 +365,7 @@ export default function CertificationScreen() {
 }
 
 const s = StyleSheet.create({
-  container:   { flex: 1, backgroundColor: BG },
+  container:   { flex: 1, backgroundColor: "transparent" },
   content:     { padding: 16, paddingBottom: 80 },
   centered:    { flex: 1, justifyContent: "center", alignItems: "center", gap: 16 },
   loadingTxt:  { fontSize: 14, color: MUTED, textAlign: "center", marginTop: 12 },

@@ -185,6 +185,8 @@ export default function ChildrenPage() {
           strengths:  mathResult.strong.join(", ") || "None identified",
           weaknesses: mathResult.weak.join(", ")   || "None detected",
         },
+        // Same key the website writes — Smart Match uses it to find the child's weak subject
+        subject_scores: { english: engResult.score, mathematics: mathResult.score },
       };
 
       const { error } = await supabase.from("students").insert({
@@ -441,7 +443,7 @@ export default function ChildrenPage() {
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
-  container:        { flex: 1, backgroundColor: BG },
+  container:        { flex: 1, backgroundColor: "transparent" },
   content:          { padding: 16, paddingBottom: 40 },
   topRow:           { flexDirection: "column", marginBottom: 20 },
   heading:          { fontSize: 20, fontWeight: "800", color: DARK },

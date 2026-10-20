@@ -5,6 +5,9 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import Header from "../../components/Header";
+import SessionModules from "../../components/SessionModules";
+import ZoomMeeting from "../../components/ZoomMeeting";
+import SessionAnnouncements from "../../components/SessionAnnouncements";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "../../lib/supabase";
 
@@ -31,6 +34,7 @@ export default function ParentSessionsPage() {
   const [error,     setError]     = useState<string|null>(null);
   const [selected,  setSelected]  = useState<string|null>(null);
   const [sessModal, setSessModal] = useState<any>(null); // tap session to see detail
+  const [pTab,      setPTab]      = useState<"modules"|"video"|"announcements">("modules");
 
   // ── Fetch bookings + sessions — same as ParentSessionsPage.jsx ──────────
   const fetchData = useCallback(async () => {
@@ -228,6 +232,32 @@ export default function ParentSessionsPage() {
                 </View>
               </View>
             )}
+
+            {/* ── Learning modules published by the tutor (website ParentSessionsPage) ── */}
+            {activeBooking && (
+              <View style={{ marginTop: 16 }}>
+                {/* Tabs (website ParentSessionsPage): Modules · Video Meeting · Announcements */}
+                <View style={s.pTabs}>
+                  {([["modules","📚 Modules"],["video","🎥 Video Meeting"],["announcements","📢 Announcements"]] as const).map(([k,l])=>(
+                    <TouchableOpacity key={k} style={[s.pTab, pTab===k&&s.pTabOn]} onPress={()=>setPTab(k)}>
+                      <Text style={[s.pTabTxt, pTab===k&&s.pTabTxtOn]}>{l}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {pTab==="modules" && (
+                  <SessionModules
+                    key={activeBooking.id}
+                    bookingId={activeBooking.id}
+                    mode="parent"
+                    studentId={activeBooking.student?.id}
+                    parentId={user?.id}
+                  />
+                )}
+                {pTab==="video" && <ZoomMeeting key={activeBooking.id} booking={activeBooking} />}
+                {pTab==="announcements" && <SessionAnnouncements key={activeBooking.id} bookingId={activeBooking.id} mode="parent" />}
+              </View>
+            )}
           </>
         )}
       </ScrollView>
@@ -277,7 +307,12 @@ export default function ParentSessionsPage() {
 }
 
 const s = StyleSheet.create({
-  container:{flex:1,backgroundColor:BG},
+  container:{flex:1,backgroundColor:"transparent"},
+  pTabs:{flexDirection:"row",flexWrap:"wrap",gap:6,marginBottom:12},
+  pTab:{paddingVertical:8,paddingHorizontal:12,borderRadius:8,backgroundColor:"#F3F4F6"},
+  pTabOn:{backgroundColor:PRIMARY_BG},
+  pTabTxt:{fontSize:12,fontWeight:"600",color:MUTED},
+  pTabTxtOn:{color:PRIMARY,fontWeight:"700"},
   content:{padding:16,paddingBottom:40},
   centered:{flex:1,alignItems:"center",justifyContent:"center",padding:24},
   retryBtn:{backgroundColor:PRIMARY,paddingHorizontal:20,paddingVertical:10,borderRadius:8},

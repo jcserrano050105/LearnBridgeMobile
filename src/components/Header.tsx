@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   View, Text, TouchableOpacity, StyleSheet, Modal,
-  TouchableWithoutFeedback, ScrollView, Animated,
+  TouchableWithoutFeedback, ScrollView, Animated, Image,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { DrawerActions, useNavigation } from "@react-navigation/native";
-import { useRouter } from "expo-router";
+import { DrawerActions } from "expo-router/react-navigation";
+import { useRouter, useNavigation } from "expo-router";
 import { useAuth } from "../context/AuthContext";
 import { supabase } from "../lib/supabase";
+import Avatar from "./Avatar";
 
 const PRIMARY   = "#3D3BF3";
 const DANGER    = "#EF4444";
@@ -22,7 +23,7 @@ export default function Header({ title, subtitle }: HeaderProps) {
   const navigation  = useNavigation();
   const router      = useRouter();
   const { user, profile } = useAuth() as any;
-  const userProfile = profile as { full_name?: string } | null;
+  const userProfile = profile as { full_name?: string; avatar_url?: string; role?: string } | null;
 
   // ── Announcement state ──────────────────────────────────────
   const [announcements, setAnnouncements] = useState<any[]>([]);
@@ -120,6 +121,11 @@ export default function Header({ title, subtitle }: HeaderProps) {
         >
           <Ionicons name="menu" size={26} color={DARK} />
         </TouchableOpacity>
+        <Image
+          source={require("../../assets/images/logo-mark.png")}
+          style={styles.logoImg}
+          resizeMode="contain"
+        />
         <View style={styles.titleContainer}>
           <Text style={styles.logo}>{title}</Text>
           {subtitle && <Text style={styles.subtitle}>{subtitle}</Text>}
@@ -148,13 +154,10 @@ export default function Header({ title, subtitle }: HeaderProps) {
 
         {/* Avatar — tapping navigates to My Profile */}
         <TouchableOpacity
-          style={styles.avatar}
           onPress={() => router.push("/(drawer)/profile" as any)}
           activeOpacity={0.8}
         >
-          <Text style={styles.avatarText}>
-            {userProfile?.full_name?.charAt(0)?.toUpperCase() ?? "U"}
-          </Text>
+          <Avatar src={userProfile?.avatar_url} name={userProfile?.full_name} role={userProfile?.role} size={38} />
         </TouchableOpacity>
       </View>
 
@@ -257,7 +260,8 @@ const styles = StyleSheet.create({
   },
   left:           { flexDirection: "row", alignItems: "center", flex: 1 },
   menuBtn:        { padding: 4 },
-  titleContainer: { marginLeft: 12 },
+  logoImg:        { width: 32, height: 32, marginLeft: 10 },
+  titleContainer: { marginLeft: 8 },
   logo:           { fontSize: 17, fontWeight: "800", color: PRIMARY },
   subtitle:       { fontSize: 12, color: MUTED, marginTop: 1 },
   right:          { flexDirection: "row", alignItems: "center", gap: 10 },

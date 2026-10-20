@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  TextInput, ActivityIndicator, Alert, RefreshControl,
+  TextInput, ActivityIndicator, Alert, RefreshControl, Image, Platform,
 } from "react-native";
+import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "../../lib/supabase";
+import * as ImagePicker from "expo-image-picker";
+import * as WebBrowser from "expo-web-browser";
+import { pickPDF, validatePDF, uploadPDF } from "../../lib/pdf";
+import { readLocalFile } from "../../lib/readLocalFile";
 import Header from "../../components/Header";
 
 const PRIMARY    = "#3D3BF3";
@@ -24,9 +29,98 @@ const CARD       = "#FFFFFF";
 
 const SPECIALIZATIONS = ["English", "Mathematics", "Science", "Filipino", "Reading"];
 
+// Same rules as the website's profile pages
+const ALLOWED_TYPES   = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
+
 export default function ProfileScreen() {
-  const { user, profile, signOut } = useAuth() as any;
+  const { user, profile, signOut, refreshProfile } = useAuth() as any;
+  const router = useRouter();
   const role = profile?.role || "parent";
+  const [avatarUrl,    setAvatarUrl]    = useState<string | null>(profile?.avatar_url || null);
+  const [uploadingPic, setUploadingPic] = useState(false);
+
+  useEffect(() => { setAvatarUrl(profile?.avatar_url || null); }, [profile?.avatar_url]);
+
+  // ── Parent ID verification ──
+  // Website shows status as profile.status || "approved"; parents with no status AND no ID
+  // (registered in the app before ID upload existed) are "unverified" so they can submit one.
+  const accountStatus = profile?.status || (profile?.valid_id_1 ? "approved" : "unverified");
+  const [uploadingId, setUploadingId] = useState<1 | 2 | null>(null);
+
+  const handleIdUpload = async (slot: 1 | 2) => {
+    const file = await pickPDF();
+    if (!file) return;
+    const err = validatePDF(file);
+    if (err) { setError(err); return; }
+    setUploadingId(slot);
+    setError("");
+    try {
+      const url = await uploadPDF(`parent-ids/${user.id}/id${slot}.pdf`, file, slot === 1 ? "ID" : "2nd ID");
+      const update: any = { [`valid_id_${slot}`]: url };
+      if (profile?.status !== "approved") update.status = "pending";
+      const { error: dbErr } = await supabase.from("profiles").update(update).eq("id", user.id);
+      if (dbErr) throw dbErr;
+      refreshProfile?.();
+      setSuccess("ID submitted! The admin will review it within 1–3 business days.");
+      setTimeout(() => setSuccess(""), 4000);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setUploadingId(null);
+    }
+  };
+
+  // ── Change profile picture (uploads to the same "avatars" bucket as the website) ──
+  const handleAvatarChange = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) { setError("Please allow photo access to change your picture."); return; }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (result.canceled) return;
+
+    const asset = result.assets[0];
+    const type  = asset.mimeType || "image/jpeg";
+    if (!ALLOWED_TYPES.includes(type)) { setError("Please upload a JPG, PNG, or WebP image."); return; }
+    if (asset.fileSize && asset.fileSize > MAX_AVATAR_SIZE) {
+      setError(`Image too large (${(asset.fileSize / 1024 / 1024).toFixed(1)}MB). Max 5MB.`);
+      return;
+    }
+
+    setUploadingPic(true);
+    setError("");
+    try {
+      const ext  = type.split("/")[1] === "jpeg" ? "jpg" : type.split("/")[1];
+      const path = `${user.id}/avatar.${ext}`;
+      const body = await readLocalFile(asset.uri);
+
+      const { error: upErr } = await supabase.storage
+        .from("avatars")
+        .upload(path, body, { upsert: true, contentType: type });
+      if (upErr) throw upErr;
+
+      const { data: urlData } = supabase.storage.from("avatars").getPublicUrl(path);
+      // Cache-busting timestamp so the new photo shows immediately
+      const publicUrl = `${urlData.publicUrl}?t=${Date.now()}`;
+
+      const { error: dbErr } = await supabase.from("profiles").update({ avatar_url: publicUrl }).eq("id", user.id);
+      if (dbErr) throw dbErr;
+
+      setAvatarUrl(publicUrl);
+      refreshProfile?.();
+      setSuccess("Profile picture updated!");
+      setTimeout(() => setSuccess(""), 3000);
+    } catch (err: any) {
+      setError("Failed to upload picture: " + err.message);
+    } finally {
+      setUploadingPic(false);
+    }
+  };
 
   // ── State ──
   const [editing,    setEditing]    = useState(false);
@@ -132,10 +226,20 @@ export default function ProfileScreen() {
     fetchProfile();
   };
 
-  const handleSignOut = async () => {
+  const doSignOut = async () => {
+    await signOut();
+    router.replace("/login" as any);
+  };
+
+  const handleSignOut = () => {
+    // Alert.alert with buttons is a no-op on web, so use the browser's confirm there
+    if (Platform.OS === "web") {
+      if (window.confirm("Are you sure you want to sign out?")) doSignOut();
+      return;
+    }
     Alert.alert("Sign Out", "Are you sure you want to sign out?", [
       { text: "Cancel", style: "cancel" },
-      { text: "Sign Out", style: "destructive", onPress: async () => { await signOut(); } },
+      { text: "Sign Out", style: "destructive", onPress: doSignOut },
     ]);
   };
 
@@ -158,7 +262,6 @@ export default function ProfileScreen() {
     );
   }
 
-  const initials = (form.full_name || profile?.full_name || "U").charAt(0).toUpperCase();
   const approvedRate = tutorData?.approved_rate || tutorData?.rate_per_session;
 
   return (
@@ -171,10 +274,59 @@ export default function ProfileScreen() {
         refreshControl={<RefreshControl refreshing={loading} onRefresh={fetchProfile} tintColor={PRIMARY} />}
       >
 
+        {/* ── Parent account status banner (website ParentProfilePage) ── */}
+        {role === "parent" && accountStatus === "pending" && (
+          <View style={styles.statusPending}>
+            <Text style={{ fontSize: 20 }}>⏳</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.statusTitlePending}>Account Pending Approval</Text>
+              <Text style={styles.statusTxtPending}>
+                Your submitted IDs are under review by the admin team. You will be notified once approved (1–3 business days).
+              </Text>
+            </View>
+          </View>
+        )}
+        {role === "parent" && accountStatus === "rejected" && (
+          <View style={styles.statusRejected}>
+            <Text style={{ fontSize: 20 }}>❌</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.statusTitleRejected}>Account Not Approved</Text>
+              <Text style={styles.statusTxtRejected}>
+                Your submitted IDs were not accepted. Please contact admin through the messages section.
+              </Text>
+            </View>
+          </View>
+        )}
+        {role === "parent" && accountStatus === "unverified" && (
+          <View style={styles.statusPending}>
+            <Text style={{ fontSize: 20 }}>🪪</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.statusTitlePending}>Verify Your ID</Text>
+              <Text style={styles.statusTxtPending}>
+                Upload a valid government ID below. Booking tutors and wallet top-up unlock once the admin approves it.
+              </Text>
+            </View>
+          </View>
+        )}
+
         {/* ── Avatar card ── */}
         <View style={styles.avatarCard}>
-          <View style={styles.avatarCircle}>
-            <Text style={styles.avatarText}>{initials}</Text>
+          <View style={styles.avatarWrap}>
+            {avatarUrl ? (
+              <Image source={{ uri: avatarUrl }} style={styles.avatarImg} />
+            ) : (
+              <View style={styles.avatarCircle}>
+                <Text style={styles.avatarText}>
+                  {(form.full_name || profile?.full_name || (role === "tutor" ? "T" : "P")).charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+            <TouchableOpacity style={styles.cameraBtn} onPress={handleAvatarChange} disabled={uploadingPic}>
+              {uploadingPic
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Ionicons name="camera" size={14} color="#fff" />
+              }
+            </TouchableOpacity>
           </View>
           <Text style={styles.profileName}>{form.full_name || "User"}</Text>
           <Text style={styles.profileEmail}>{profile?.email || ""}</Text>
@@ -184,6 +336,7 @@ export default function ProfileScreen() {
           {role === "tutor" && approvedRate && (
             <Text style={styles.rateTag}>₱{Number(approvedRate).toLocaleString()} / session</Text>
           )}
+          <Text style={styles.photoHint}>Tap the camera icon to update your photo</Text>
         </View>
 
         {/* ── Success / Error banners ── */}
@@ -298,6 +451,40 @@ export default function ProfileScreen() {
           </Field>
         </View>
 
+        {/* ── Parent: submitted valid IDs (website: "🪪 Submitted Valid IDs") ── */}
+        {role === "parent" && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>🪪 Submitted Valid IDs</Text>
+            <Text style={styles.idsIntro}>
+              These are the identification documents you submitted for verification.
+            </Text>
+            {([
+              { slot: 1 as const, label: "1st Valid ID", url: profile?.valid_id_1 },
+              { slot: 2 as const, label: "2nd Valid ID", url: profile?.valid_id_2 },
+            ]).map(doc => (
+              <View key={doc.slot} style={[styles.idRow, doc.url ? styles.idRowOk : styles.idRowMissing]}>
+                <Text style={{ fontSize: 22 }}>🪪</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.idLabel}>{doc.label}</Text>
+                  <Text style={styles.idSub}>{doc.url ? "PDF submitted · Tap to view" : "Not submitted"}</Text>
+                </View>
+                {doc.url ? (
+                  <TouchableOpacity style={styles.idViewBtn} onPress={() => WebBrowser.openBrowserAsync(doc.url)}>
+                    <Text style={styles.idViewTxt}>👁 View PDF</Text>
+                  </TouchableOpacity>
+                ) : accountStatus !== "approved" ? (
+                  // App extra: parents who registered without an ID can submit one here
+                  <TouchableOpacity style={styles.idUploadBtn} onPress={() => handleIdUpload(doc.slot)} disabled={!!uploadingId}>
+                    {uploadingId === doc.slot
+                      ? <ActivityIndicator size="small" color={PRIMARY} />
+                      : <Text style={styles.idUploadTxt}>⬆ Upload PDF</Text>}
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        )}
+
         {/* ── Tutor-only fields ── */}
         {role === "tutor" && (
           <View style={styles.card}>
@@ -377,19 +564,41 @@ function Field({ label, icon, children, last }: {
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container:    { flex: 1, backgroundColor: BG },
+  container:    { flex: 1, backgroundColor: "transparent" },
   content:      { padding: 16, paddingBottom: 60 },
   centered:     { flex: 1, justifyContent: "center", alignItems: "center" },
 
   // Avatar card
   avatarCard:   { backgroundColor: CARD, borderRadius: 16, padding: 24, alignItems: "center", marginBottom: 16, borderWidth: 1, borderColor: BORDER },
-  avatarCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: PRIMARY, justifyContent: "center", alignItems: "center", marginBottom: 12 },
-  avatarText:   { color: "#fff", fontSize: 32, fontWeight: "800" },
+  avatarWrap:   { position: "relative", marginBottom: 16 },
+  avatarImg:    { width: 96, height: 96, borderRadius: 48, borderWidth: 3, borderColor: PRIMARY },
+  avatarCircle: { width: 96, height: 96, borderRadius: 48, backgroundColor: PRIMARY, justifyContent: "center", alignItems: "center", borderWidth: 3, borderColor: PRIMARY },
+  avatarText:   { color: "#fff", fontSize: 36, fontWeight: "800" },
+  cameraBtn:    { position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderRadius: 15, backgroundColor: PRIMARY, borderWidth: 2, borderColor: "#fff", justifyContent: "center", alignItems: "center" },
+  photoHint:    { fontSize: 11, color: MUTED, marginTop: 10 },
   profileName:  { fontSize: 20, fontWeight: "800", color: DARK },
   profileEmail: { fontSize: 13, color: MUTED, marginTop: 4 },
   rolePill:     { marginTop: 8, paddingHorizontal: 14, paddingVertical: 4, backgroundColor: PRIMARY_BG, borderRadius: 20 },
   rolePillTxt:  { fontSize: 12, fontWeight: "700", color: PRIMARY },
   rateTag:      { marginTop: 6, fontSize: 13, color: TEAL, fontWeight: "600" },
+
+  // Parent status banners + valid IDs
+  statusPending:       { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "#FEF9C3", borderWidth: 1, borderColor: "#FDE68A", borderRadius: 12, padding: 14, marginBottom: 16 },
+  statusTitlePending:  { fontSize: 13, fontWeight: "700", color: "#92400E", marginBottom: 2 },
+  statusTxtPending:    { fontSize: 13, color: "#92400E", lineHeight: 18 },
+  statusRejected:      { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "#FEE2E2", borderWidth: 1, borderColor: "#FCA5A5", borderRadius: 12, padding: 14, marginBottom: 16 },
+  statusTitleRejected: { fontSize: 13, fontWeight: "700", color: "#DC2626", marginBottom: 2 },
+  statusTxtRejected:   { fontSize: 13, color: "#DC2626", lineHeight: 18 },
+  idsIntro:     { fontSize: 13, color: MUTED, paddingHorizontal: 16, marginBottom: 12 },
+  idRow:        { flexDirection: "row", alignItems: "center", gap: 12, marginHorizontal: 16, marginBottom: 12, padding: 12, borderRadius: 12, borderWidth: 1.5 },
+  idRowOk:      { backgroundColor: "#F0FDF4", borderColor: "#6EE7B7" },
+  idRowMissing: { backgroundColor: "#FEF2F2", borderColor: "#FCA5A5" },
+  idLabel:      { fontSize: 14, fontWeight: "600", color: DARK },
+  idSub:        { fontSize: 11, color: MUTED, marginTop: 2 },
+  idViewBtn:    { backgroundColor: "#D1FAE5", borderWidth: 1, borderColor: "#6EE7B7", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7 },
+  idViewTxt:    { fontSize: 12, fontWeight: "700", color: "#065F46" },
+  idUploadBtn:  { backgroundColor: PRIMARY_BG, borderWidth: 1, borderColor: PRIMARY + "40", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, minWidth: 90, alignItems: "center" },
+  idUploadTxt:  { fontSize: 12, fontWeight: "700", color: PRIMARY },
 
   // Banners
   successBanner:{ flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "#D1FAE5", borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: "#6EE7B7" },

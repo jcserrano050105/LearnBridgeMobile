@@ -1,7 +1,17 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { uploadPDF, newTempId } from '../lib/pdf';
 
 const AuthContext = createContext(null);
+
+function accountExistsError(role) {
+  const as = role ? ` (registered as a ${role.charAt(0).toUpperCase() + role.slice(1)})` : '';
+  const err = new Error(
+    `An account with this email already exists${as}. Please sign in instead, or use Forgot Password if you can't remember it.`
+  );
+  err.code = 'account_exists';
+  return err;
+}
 
 export function AuthProvider({ children }) {
   const [user,    setUser]    = useState(null);
@@ -37,49 +47,98 @@ export function AuthProvider({ children }) {
     setLoading(false);
   }
 
-  async function uploadTutorDocument(userId, file, docType) {
+  // Same storage layout as the website's RegisterPage: uploaded BEFORE sign-up
+  // (no session yet), saved as public URLs.
+  //   tutors  → tutor-documents/temp/<tempId>/<name>.pdf
+  //   parents → tutor-documents/parent-ids/<tempId>/id1.pdf, id2.pdf
+  // `file` is a picked document: { uri, name, size, mimeType }.
+  async function uploadSignupPdf(folder, tempId, file, storageName, label) {
     if (!file) return null;
-    const ext      = 'pdf';
-    const filename = `${docType}_${Date.now()}.${ext}`;
-    const path     = `${userId}/${filename}`;
-    const { error: uploadError } = await supabase.storage
-      .from('tutor-documents')
-      .upload(path, file, {
-        contentType:  'application/pdf',
-        cacheControl: '3600',
-        upsert:       true,
-      });
-    if (uploadError) throw new Error(`Failed to upload ${docType}: ${uploadError.message}`);
-    return path;
+    return uploadPDF(`${folder}/${tempId}/${storageName}`, file, label);
   }
 
   async function signUp({
     email, password, fullName, role,
     location, gender, bio,
     yearsExperience, ratePerSession, specialization,
-    nbiFile, prcFile, medicalFile,
+    nbiFile, prcFile, medicalFile, applicationFormFile,
+    validId1File, validId2File,
   }) {
+    email = email.trim();
+    let docUrls = {};
+    let idUrls  = {};
+
+    // ── Stop before touching Supabase Auth if the email is already registered ──
+    // Calling auth.signUp on an existing (unconfirmed) email overwrites its password,
+    // so the check has to happen first. Escape LIKE wildcards so ilike is an exact,
+    // case-insensitive match.
+    const pattern = email.replace(/[\\%_]/g, (c) => `\\${c}`);
+    const { data: existing, error: lookupError } = await supabase
+      .from('profiles')
+      .select('role')
+      .ilike('email', pattern)
+      .limit(1)
+      .maybeSingle();
+    if (lookupError) throw new Error(`Could not verify email: ${lookupError.message}`);
+    if (existing) throw accountExistsError(existing.role);
+
+    // ── Tutor documents: upload FIRST, before sign-up (same as the website) ──
+    if (role === 'tutor') {
+      const tempId = newTempId();
+      docUrls = {
+        nbi_clearance_url:    await uploadSignupPdf('temp', tempId, nbiFile,             'nbi.pdf',              'NBI Clearance'),
+        prc_license_url:      await uploadSignupPdf('temp', tempId, prcFile,             'prc.pdf',              'PRC License'),
+        medical_cert_url:     await uploadSignupPdf('temp', tempId, medicalFile,         'medical.pdf',          'Medical Certificate'),
+        application_form_url: await uploadSignupPdf('temp', tempId, applicationFormFile, 'application-form.pdf', 'Application Form'),
+      };
+    }
+
+    // ── Parent valid IDs: upload FIRST, before sign-up (same as the website) ──
+    if (role === 'parent') {
+      const tempId = newTempId();
+      idUrls = {
+        valid_id_1: await uploadSignupPdf('parent-ids', tempId, validId1File, 'id1.pdf', 'ID'),
+        valid_id_2: await uploadSignupPdf('parent-ids', tempId, validId2File, 'id2.pdf', '2nd ID'),
+      };
+    }
+
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: { data: { full_name: fullName, role } },
     });
-    if (error) throw error;
+    if (error) {
+      if (/already (registered|exists)/i.test(error.message)) throw accountExistsError();
+      throw error;
+    }
     if (!data.user) throw new Error('Sign-up did not return a user. Check Supabase email confirmation settings.');
+    // Supabase returns a placeholder user with no identities when the email is taken
+    if (Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      throw accountExistsError();
+    }
 
     const userId = data.user.id;
 
+    const profileRow = {
+      id:        userId,
+      role,
+      full_name: fullName,
+      email,
+      location:  location || null,
+      gender:    gender   || null,
+      bio:       bio      || null,
+    };
+    // Parents start as "pending" until the admin approves their ID (website behaviour)
+    if (role === 'parent') {
+      profileRow.valid_id_1 = idUrls.valid_id_1 || null;
+      profileRow.valid_id_2 = idUrls.valid_id_2 || null;
+      profileRow.status     = 'pending';
+    }
+
+    // upsert in case a database trigger already created the profile row
     const { error: profileError } = await supabase
       .from('profiles')
-      .insert({
-        id:        userId,
-        role,
-        full_name: fullName,
-        email,
-        location:  location || null,
-        gender:    gender   || null,
-        bio:       bio      || null,
-      });
+      .upsert(profileRow, { onConflict: 'id' });
 
     if (profileError) {
       console.error('Profile insert failed:', profileError);
@@ -87,33 +146,21 @@ export function AuthProvider({ children }) {
     }
 
     if (role === 'tutor') {
-      let nbiPath     = null;
-      let prcPath     = null;
-      let medicalPath = null;
-
-      try {
-        [nbiPath, prcPath, medicalPath] = await Promise.all([
-          uploadTutorDocument(userId, nbiFile,     'nbi'),
-          uploadTutorDocument(userId, prcFile,     'prc'),
-          uploadTutorDocument(userId, medicalFile, 'medical'),
-        ]);
-      } catch (uploadErr) {
-        throw new Error(`Documents failed to upload: ${uploadErr.message}. Your account was created — please contact support to resubmit documents.`);
-      }
-
+      // upsert like the website, in case a database trigger already created the row
       const { error: tutorError } = await supabase
         .from('tutors')
-        .insert({
-          id:                  userId,
-          specialization:      specialization || [],
-          years_experience:    yearsExperience || 0,
-          rate_per_session:    ratePerSession  || 0,
-          nbi_clearance_url:   nbiPath,
-          prc_license_url:     prcPath,
-          medical_cert_url:    medicalPath,
-          status:              'pending',
-          wallet_balance:      0,
-        });
+        .upsert({
+          id:                   userId,
+          specialization:       specialization || [],
+          years_experience:     yearsExperience || 0,
+          rate_per_session:     ratePerSession  || 0,
+          nbi_clearance_url:    docUrls.nbi_clearance_url    || null,
+          prc_license_url:      docUrls.prc_license_url      || null,
+          medical_cert_url:     docUrls.medical_cert_url     || null,
+          application_form_url: docUrls.application_form_url || null,
+          status:               'pending',
+          wallet_balance:       0,
+        }, { onConflict: 'id' });
 
       if (tutorError) {
         throw new Error(`Tutor profile setup failed: ${tutorError.message}`);

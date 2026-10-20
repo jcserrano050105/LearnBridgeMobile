@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "../../lib/supabase";
 import Header from "../../components/Header";
+import Avatar from "../../components/Avatar";
 
 const PRIMARY    = "#3D3BF3";
 const PRIMARY_BG = "#EBEBFF";
@@ -68,7 +69,7 @@ export default function MessagesScreen() {
 
   // ── Fetch admin ─────────────────────────────────────────────
   useEffect(() => {
-    supabase.from("profiles").select("id,full_name,role")
+    supabase.from("profiles").select("id,full_name,role,avatar_url")
       .eq("role", "admin").limit(1).single()
       .then(({ data }) => { if (data) setAdminProfile(data); });
   }, []);
@@ -79,8 +80,8 @@ export default function MessagesScreen() {
     const { data } = await supabase
       .from("direct_messages")
       .select(`sender_id, receiver_id,
-        sender:sender_id(id,full_name,role),
-        receiver:receiver_id(id,full_name,role)`)
+        sender:sender_id(id,full_name,role,avatar_url),
+        receiver:receiver_id(id,full_name,role,avatar_url)`)
       .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
       .order("created_at", { ascending: false });
 
@@ -144,7 +145,7 @@ export default function MessagesScreen() {
     if (initial) setMsgLoading(true);
     const { data } = await supabase
       .from("direct_messages")
-      .select("id, content, created_at, sender_id, sender:sender_id(id,full_name,role)")
+      .select("id, content, created_at, sender_id, sender:sender_id(id,full_name,role,avatar_url)")
       .or(`and(sender_id.eq.${user.id},receiver_id.eq.${otherId}),and(sender_id.eq.${otherId},receiver_id.eq.${user.id})`)
       .order("created_at", { ascending: true });
     setMessages(data || []);
@@ -318,9 +319,7 @@ export default function MessagesScreen() {
                   style={[s.thread, activeThread?.id === adminProfile.id && s.threadActive]}
                   onPress={() => selectThread(adminProfile)}
                 >
-                  <View style={[s.threadAvatar, { backgroundColor: PRIMARY }]}>
-                    <Text style={s.threadAvatarTxt}>A</Text>
-                  </View>
+                  <Avatar name="Admin" role="admin" size={36} />
                   <View style={{ flex: 1 }}>
                     <Text style={[s.threadName, activeThread?.id === adminProfile.id && { color: PRIMARY }]}>
                       LearnBridge Admin
@@ -335,15 +334,13 @@ export default function MessagesScreen() {
             {tutorThreads.length > 0 && (
               <Text style={s.threadSection}>Tutors</Text>
             )}
-            {tutorThreads.map(t => (
+            {tutorThreads.map((t, i) => (
               <TouchableOpacity
                 key={t.id}
                 style={[s.thread, activeThread?.id === t.id && s.threadActive]}
                 onPress={() => selectThread(t)}
               >
-                <View style={[s.threadAvatar, { backgroundColor: ORANGE }]}>
-                  <Text style={s.threadAvatarTxt}>{t.full_name?.charAt(0) || "T"}</Text>
-                </View>
+                <Avatar name={t.full_name || "T"} src={t.avatar_url} colorIndex={i + 1} size={36} />
                 <View style={{ flex: 1 }}>
                   <Text style={[s.threadName, activeThread?.id === t.id && { color: PRIMARY }]}>
                     {t.full_name}
@@ -380,6 +377,13 @@ export default function MessagesScreen() {
             >
               {/* Chat header */}
               <View style={s.chatHeader}>
+                <Avatar
+                  name={isAdminThread ? "Admin" : activeThread.full_name}
+                  src={isAdminThread ? null : activeThread.avatar_url}
+                  role={isAdminThread ? "admin" : activeThread.role}
+                  colorIndex={Math.max(0, tutorThreads.findIndex(t => t.id === activeThread.id)) + 1}
+                  size={34}
+                />
                 <View style={{ flex: 1 }}>
                   <Text style={s.chatName} numberOfLines={1}>
                     {isAdminThread ? "LearnBridge Admin" : activeThread.full_name}
@@ -444,15 +448,17 @@ export default function MessagesScreen() {
                     </View>
                   }
                   renderItem={({ item: m }) => {
-                    const isMine = m.sender_id === user.id;
+                    const isMine = m.sender_id === user?.id;
                     return (
                       <View style={[s.msgRow, isMine ? s.msgRowMe : s.msgRowOther]}>
                         {!isMine && (
-                          <View style={[s.msgAvatar, { backgroundColor: isAdminThread ? PRIMARY : ORANGE }]}>
-                            <Text style={s.msgAvatarTxt}>
-                              {(m.sender?.full_name || "?").charAt(0)}
-                            </Text>
-                          </View>
+                          <Avatar
+                            name={m.sender?.full_name || "?"}
+                            src={m.sender?.avatar_url}
+                            role={m.sender?.role}
+                            colorIndex={Math.max(0, tutorThreads.findIndex(t => t.id === activeThread.id)) + 1}
+                            size={26}
+                          />
                         )}
                         <View style={[s.bubble, isMine ? s.bubbleMe : s.bubbleOther]}>
                           <Text style={[s.bubbleTxt, isMine && { color: "#fff" }]}>{m.content}</Text>
@@ -624,7 +630,7 @@ export default function MessagesScreen() {
 }
 
 const s = StyleSheet.create({
-  container:  { flex: 1, backgroundColor: BG },
+  container:  { flex: 1, backgroundColor: "transparent" },
   centered:   { flex: 1, justifyContent: "center", alignItems: "center", padding: 24 },
   body:       { flex: 1, flexDirection: "row" },
 

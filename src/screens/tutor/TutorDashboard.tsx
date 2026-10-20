@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useAuth } from "../../context/AuthContext";
 import useTutorDashboard from "../../hooks/useTutorDashboard";
+import { useGreeting } from "../../hooks/useGreeting";
 import Header from "../../components/Header";
 
 const PRIMARY    = "#3D3BF3";
@@ -66,12 +67,7 @@ export default function TutorDashboard() {
   const [responding, setResponding] = useState<Record<string, boolean>>({});
   const name = profile?.full_name?.split(" ")[0] || "Tutor";
 
-  const getGreeting = () => {
-    const h = new Date().getHours();
-    if (h < 12) return "Good Morning";
-    if (h < 18) return "Good Afternoon";
-    return "Good Evening";
-  };
+  const greeting = useGreeting();
 
   const handleRespond = async (bookingId: string, accept: boolean) => {
     setResponding(r => ({ ...r, [bookingId]: true }));
@@ -119,7 +115,7 @@ export default function TutorDashboard() {
         refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} tintColor={PRIMARY} />}
       >
         {/* ── Welcome ── */}
-        <Text style={styles.greeting}>{getGreeting()}, {name} 👋</Text>
+        <Text style={styles.greeting}>{greeting}, {name} 👋</Text>
         <Text style={styles.subtitle}>Manage your sessions, wallet, and tutee requests.</Text>
 
         {/* ── Stats ── */}
@@ -217,7 +213,7 @@ export default function TutorDashboard() {
 }
 
 const styles = StyleSheet.create({
-  container:    { flex: 1, backgroundColor: BG },
+  container:    { flex: 1, backgroundColor: "transparent" },
   content:      { padding: 16, paddingBottom: 100 },
   centered:     { flex: 1, justifyContent: "center", alignItems: "center", padding: 24 },
   retryBtn:     { backgroundColor: PRIMARY, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },

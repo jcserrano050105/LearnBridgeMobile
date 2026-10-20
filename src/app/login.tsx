@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, Alert,
+  ImageBackground, Image,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useAuth } from "../context/AuthContext";
@@ -41,6 +42,11 @@ export default function LoginPage() {
   };
 
   return (
+    <ImageBackground
+      source={require("../../assets/images/login-bg.png")}
+      style={s.background}
+      resizeMode="cover"
+    >
     <KeyboardAvoidingView
       style={s.container}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -53,7 +59,7 @@ export default function LoginPage() {
         {/* Logo */}
         <View style={s.logoRow}>
           <View style={s.logoBox}>
-            <Text style={s.logoTxt}>LB</Text>
+            <Image source={require("../../assets/images/logo-mark.png")} style={s.logoImg} resizeMode="contain" />
           </View>
           <View>
             <Text style={s.logoName}>LearnBridge</Text>
@@ -103,6 +109,14 @@ export default function LoginPage() {
           </TouchableOpacity>
         </View>
 
+        {/* Forgot password */}
+        <TouchableOpacity
+          style={s.forgotBtn}
+          onPress={() => router.push("/forgot-password" as any)}
+        >
+          <Text style={s.forgotTxt}>Forgot password?</Text>
+        </TouchableOpacity>
+
         {/* Sign In button */}
         <TouchableOpacity
           style={[s.button, loading && { opacity: 0.7 }]}
@@ -147,15 +161,17 @@ export default function LoginPage() {
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
+    </ImageBackground>
   );
 }
 
 const s = StyleSheet.create({
-  container:   { flex: 1, backgroundColor: BG },
+  background:  { flex: 1, backgroundColor: BG },
+  container:   { flex: 1 },
   scroll:      { padding: 24, paddingTop: 60, paddingBottom: 40 },
   logoRow:     { flexDirection: "row", alignItems: "center", gap: 14, marginBottom: 40 },
-  logoBox:     { width: 46, height: 46, borderRadius: 12, backgroundColor: PRIMARY, justifyContent: "center", alignItems: "center" },
-  logoTxt:     { color: "#fff", fontWeight: "800", fontSize: 17 },
+  logoBox:     { width: 46, height: 46, borderRadius: 12, backgroundColor: "#fff", justifyContent: "center", alignItems: "center", shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3 },
+  logoImg:     { width: 40, height: 40 },
   logoName:    { fontSize: 18, fontWeight: "800", color: DARK },
   logoSub:     { fontSize: 12, color: MUTED, marginTop: 2 },
   heading:     { fontSize: 26, fontWeight: "800", color: DARK, marginBottom: 6 },
@@ -164,7 +180,9 @@ const s = StyleSheet.create({
   errorTxt:    { color: CORAL, fontSize: 13, fontWeight: "600" },
   label:       { fontSize: 13, fontWeight: "600", color: DARK, marginBottom: 6 },
   input:       { borderWidth: 1.5, borderColor: BORDER, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, color: DARK, backgroundColor: "#fff", marginBottom: 16 },
-  passRow:     { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 16 },
+  passRow:     { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
+  forgotBtn:   { alignSelf: "flex-end", paddingVertical: 4, marginBottom: 16 },
+  forgotTxt:   { color: PRIMARY, fontSize: 13, fontWeight: "700" },
   eyeBtn:      { width: 44, height: 44, borderRadius: 10, borderWidth: 1.5, borderColor: BORDER, backgroundColor: "#fff", justifyContent: "center", alignItems: "center" },
   button:      { backgroundColor: PRIMARY, paddingVertical: 15, borderRadius: 12, alignItems: "center", marginTop: 4 },
   buttonTxt:   { color: "#fff", fontSize: 15, fontWeight: "700" },
