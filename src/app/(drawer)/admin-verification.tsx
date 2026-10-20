@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "../../lib/supabase";
 import Header from "../../components/Header";
+import Avatar from "../../components/Avatar";
 
 const PRIMARY    = "#3D3BF3";
 const PRIMARY_BG = "#EBEBFF";
@@ -52,7 +53,7 @@ export default function AdminVerificationScreen() {
           id, status, rate_per_session, approved_rate, years_experience,
           specialization, certification_scores, admin_notes, created_at,
           nbi_clearance_url, prc_license_url, medical_cert_url,
-          profile:id ( full_name, email, gender, location, bio )
+          profile:id ( full_name, email, gender, location, bio, avatar_url )
         `)
         .order("created_at", { ascending: false });
       if (error) throw error;
@@ -175,14 +176,12 @@ export default function AdminVerificationScreen() {
             <Text style={s.emptyTxt}>Tutor applications will appear here.</Text>
           </View>
         ) : (
-          filtered.map(t => {
+          filtered.map((t, i) => {
             const sc = STATUS_CFG[t.status] || STATUS_CFG.pending;
             return (
               <View key={t.id} style={s.card}>
                 <View style={s.cardTop}>
-                  <View style={s.avatarCircle}>
-                    <Text style={s.avatarTxt}>{(t.profile?.full_name || "T").charAt(0)}</Text>
-                  </View>
+                  <Avatar name={t.profile?.full_name || "T"} src={t.profile?.avatar_url} colorIndex={i} size={42} />
                   <View style={{ flex: 1 }}>
                     <Text style={s.cardName}>{t.profile?.full_name || "Tutor"}</Text>
                     <Text style={s.cardEmail}>{t.profile?.email || "—"}</Text>

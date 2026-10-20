@@ -29,6 +29,8 @@ function RootNavigator() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
       <Stack.Screen name="login" />
+      <Stack.Screen name="forgot-password" />
+      <Stack.Screen name="pending-approval" />
       <Stack.Screen name="register-parent" />
       <Stack.Screen name="register-tutor" />
       <Stack.Screen name="(drawer)" />

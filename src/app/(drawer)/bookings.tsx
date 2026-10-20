@@ -8,6 +8,8 @@ import { useRouter } from "expo-router";
 import { useAuth } from "../../context/AuthContext";
 import { supabase } from "../../lib/supabase";
 import Header from "../../components/Header";
+import SessionScheduleModal from "../../components/SessionScheduleModal";
+import BookingDetailModal from "../../components/BookingDetailModal";
 
 const PRIMARY    = "#3D3BF3";
 const PRIMARY_BG = "#EBEBFF";
@@ -41,7 +43,7 @@ const PARENT_STATUS: Record<string, { label: string; color: string; bg: string }
   confirmed:              { label: "On-going",                   color: PRIMARY, bg: PRIMARY_BG },
   rejected:               { label: "Rejected",                   color: CORAL,   bg: CORAL_BG  },
   cancelled:              { label: "Cancelled",                  color: MUTED,   bg: "#F3F4F6" },
-  pending_parent_confirm: { label: "Awaiting Your Confirmation", color: PURPLE,  bg: PURPLE_BG },
+  pending_parent_confirm: { label: "Needs Confirmation",         color: PURPLE,  bg: PURPLE_BG },
   completed:              { label: "Completed",                  color: GREEN,   bg: GREEN_BG  },
 };
 
@@ -91,6 +93,14 @@ export default function BookingsScreen() {
   const [submitting,   setSubmitting]   = useState(false);
   const [feedbackForm, setFeedbackForm] = useState({ star_rating: 0, rating_comment: "" });
   const setF = (k: string, v: any) => setFeedbackForm(f => ({ ...f, [k]: v }));
+  const [scheduleFor,   setScheduleFor]   = useState<any>(null);
+  const [parentBalance, setParentBalance] = useState<number | null>(null);
+  const [payError,      setPayError]      = useState("");
+  const [toast,         setToast]         = useState<{ msg: string; type: "success" | "error" } | null>(null);
+  const showToast = (msg: string, type: "success" | "error" = "success") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 5000);
+  };
 
   // ── KEY FIX: Query separately by role to respect RLS ───────────────────────
   const fetchBookings = useCallback(async () => {
@@ -137,60 +147,17 @@ export default function BookingsScreen() {
   useEffect(() => { fetchBookings(); }, [fetchBookings]);
 
   // ── TUTOR: Accept ───────────────────────────────────────────────────────────
+  // Same as the website: accepting only confirms the booking. Money moves later,
+  // when the parent pays (the parent pays; the tutor receives 90%).
   const handleAccept = async (booking: any) => {
     setUpdating(booking.id);
     try {
-      const { data: tutorRow } = await supabase
-        .from("tutors")
-        .select("wallet_balance, approved_rate, rate_per_session")
-        .eq("id", user.id)
-        .single();
-
-      const walletBalance = Number(tutorRow?.wallet_balance || 0);
-      const rate          = Number(tutorRow?.approved_rate || tutorRow?.rate_per_session || 0);
-      const sessionCount  = 8;
-      const totalAmount   = rate * sessionCount;
-      const commission    = totalAmount * 0.10;
-
-      if (walletBalance < commission) {
-        Alert.alert(
-          "Insufficient Wallet Balance",
-          `You need ₱${commission.toFixed(2)} commission but only have ₱${walletBalance.toFixed(2)}.\n\nBooking Total: ₱${totalAmount.toLocaleString()}\nCommission (10%): ₱${commission.toFixed(2)}\n\nPlease top up your wallet first.`,
-          [
-            { text: "Cancel", style: "cancel", onPress: () => setUpdating(null) },
-            { text: "Go to Wallet", onPress: () => { setUpdating(null); router.push("/(drawer)/wallet" as any); } },
-          ]
-        );
-        return;
-      }
-
-      Alert.alert(
-        "Accept Booking",
-        `Accept this booking?\n\n• Rate: ₱${rate.toLocaleString()}/session × ${sessionCount} sessions\n• Total: ₱${totalAmount.toLocaleString()}\n• Commission (10%): ₱${commission.toFixed(2)}\n• Balance After: ₱${(walletBalance - commission).toFixed(2)}\n\nCommission deducted when parent confirms.`,
-        [
-          { text: "Cancel", style: "cancel", onPress: () => setUpdating(null) },
-          {
-            text: "Accept",
-            onPress: async () => {
-              try {
-                const { error } = await supabase.from("bookings").update({
-                  status:            "confirmed",
-                  commission_amount: commission,
-                  total_amount:      totalAmount,
-                }).eq("id", booking.id);
-                if (error) throw error;
-                await fetchBookings();
-              } catch (e: any) {
-                Alert.alert("Error", e.message);
-              } finally {
-                setUpdating(null);
-              }
-            },
-          },
-        ]
-      );
+      const { error } = await supabase.from("bookings").update({ status: "confirmed" }).eq("id", booking.id);
+      if (error) throw error;
+      await fetchBookings();
     } catch (e: any) {
       Alert.alert("Error", e.message);
+    } finally {
       setUpdating(null);
     }
   };
@@ -266,64 +233,114 @@ export default function BookingsScreen() {
     ]);
   };
 
-  // ── PARENT: Confirm + Rate + Deduct Commission ──────────────────────────────
-  const handleConfirmComplete = async () => {
+  // ── PARENT: Confirm & Pay + Rate ────────────────────────────────────────────
+  // Payment logic mirrors handleConfirmAndPay in the website's BookingsPage.jsx:
+  // parent wallet pays the full amount, tutor receives 90%, LearnBridge keeps 10%.
+  const SESSIONS = 8;
+  const priceOf = (b: any) => Number(b?.total_amount || 0) || SESSIONS;
+
+  const openConfirmPay = async (b: any) => {
+    setFeedbackForm({ star_rating: 0, rating_comment: "" });
+    setPayError("");
+    setConfirmModal(b);
+    const { data } = await supabase.from("profiles").select("wallet_balance").eq("id", user.id).single();
+    setParentBalance(Number(data?.wallet_balance || 0));
+  };
+
+  const handleConfirmAndPay = async () => {
     if (!confirmModal) return;
-    if (feedbackForm.star_rating === 0) {
-      Alert.alert("Rating Required", "Please select a star rating.");
-      return;
-    }
+    if (feedbackForm.star_rating === 0) { setPayError("Please select a star rating."); return; }
+    const b = confirmModal;
     setSubmitting(true);
+    setPayError("");
     try {
-      const booking = confirmModal;
-      const tutorId = booking.tutor_id;
+      // Prevent double payment — check current payment status first
+      const { data: fresh } = await supabase
+        .from("bookings").select("payment_status").eq("id", b.id).single();
+      if (fresh?.payment_status === "paid") {
+        setConfirmModal(null);
+        await fetchBookings();
+        showToast("This booking has already been paid.", "error");
+        return;
+      }
 
-      const { data: tutorRow } = await supabase
-        .from("tutors")
-        .select("approved_rate, rate_per_session, wallet_balance")
-        .eq("id", tutorId)
-        .single();
+      const totalAmount = priceOf(b);
+      const { data: prof } = await supabase
+        .from("profiles").select("wallet_balance").eq("id", user.id).single();
+      const balance = Number(prof?.wallet_balance || 0);
+      if (balance < totalAmount) {
+        setParentBalance(balance);
+        setPayError(`Insufficient wallet balance. You need ₱${totalAmount.toFixed(2)} but have ₱${balance.toFixed(2)}. Please top up first.`);
+        return;
+      }
 
-      const rate         = Number(tutorRow?.approved_rate || tutorRow?.rate_per_session || 0);
-      const totalAmount  = rate * 8;
-      const commission   = totalAmount * 0.10;
-      const walletBal    = Number(tutorRow?.wallet_balance || 0);
-      const newBalance   = Math.max(0, walletBal - commission);
+      const fee      = Math.round(totalAmount * 0.10 * 100) / 100;
+      const earnings = Math.round(totalAmount * 0.90 * 100) / 100;
+      const subject  = subjectLabel(b.subject);
 
-      // 1. Save parent rating
+      // 1. Deduct from parent wallet
+      const { error: deductErr } = await supabase.rpc("decrement_wallet", { user_id: user.id, amount: totalAmount });
+      if (deductErr) throw new Error("Failed to deduct from wallet: " + deductErr.message);
+
+      // 2. Record parent payment
+      await supabase.from("wallet_transactions").insert({
+        user_id:     user.id,
+        type:        "deduction",
+        amount:      totalAmount,
+        description: `Payment for ${b.subject} sessions with ${b.tutor?.full_name || "Tutor"}`,
+        booking_id:  b.id,
+        status:      "completed",
+      });
+
+      // 3. Add 90% to tutor wallet + record earning and 10% fee
+      await supabase.rpc("increment_tutor_wallet", { tutor_id: b.tutor_id, amount: earnings });
+      await supabase.from("wallet_transactions").insert({
+        user_id:     b.tutor_id,
+        type:        "earning",
+        amount:      earnings,
+        description: `Earnings (90%) — ${b.subject} session with ${b.student?.name || "Student"}`,
+        booking_id:  b.id,
+        status:      "completed",
+      });
+      await supabase.from("wallet_transactions").insert({
+        user_id:     b.tutor_id,
+        type:        "deduction",
+        amount:      fee,
+        description: `LearnBridge platform fee (10%) — ${b.subject} session`,
+        booking_id:  b.id,
+        status:      "completed",
+      });
+
+      // 4. Platform commission record
+      const { error: commErr } = await supabase.from("platform_earnings").insert({
+        booking_id: b.id, gross_amount: totalAmount, commission: fee,
+      });
+      if (commErr) console.error("Platform earnings insert error:", commErr.message);
+
+      // 5. Mark booking as paid AND completed
+      await supabase.from("bookings").update({
+        payment_status: "paid",
+        paid_at:        new Date().toISOString(),
+        platform_fee:   fee,
+        tutor_earnings: earnings,
+        status:         "completed",
+      }).eq("id", b.id);
+
+      // 6. Save the parent's rating (app extra — kept from the old Confirm & Rate)
       await supabase.from("tutor_ratings").upsert({
-        booking_id:  booking.id,
-        tutor_id:    tutorId,
+        booking_id:  b.id,
+        tutor_id:    b.tutor_id,
         parent_id:   user.id,
         star_rating: feedbackForm.star_rating,
         comment:     feedbackForm.rating_comment || "",
       });
 
-      // 2. Mark booking completed
-      await supabase.from("bookings").update({
-        status:       "completed",
-        total_amount: totalAmount,
-      }).eq("id", booking.id);
-
-      // 3. Deduct commission from tutor wallet
-      await supabase.from("tutors").update({ wallet_balance: newBalance }).eq("id", tutorId);
-
-      // 4. Record wallet transaction
-      await supabase.from("wallet_transactions").insert({
-        tutor_id:      tutorId,
-        type:          "commission_deduction",
-        amount:        -commission,
-        balance_after: newBalance,
-        description:   `10% platform commission · ${subjectLabel(booking.subject)}`,
-        booking_id:    booking.id,
-      });
-
       setConfirmModal(null);
       setFeedbackForm({ star_rating: 0, rating_comment: "" });
       await fetchBookings();
-      Alert.alert("✅ Session Confirmed!", "Your rating has been submitted. Thank you!");
+      showToast(`Payment confirmed! ₱${earnings.toFixed(2)} sent to tutor (${subject}).`);
     } catch (e: any) {
-      Alert.alert("Error", e.message);
+      setPayError(e.message);
     } finally {
       setSubmitting(false);
     }
@@ -337,6 +354,98 @@ export default function BookingsScreen() {
       </View>
     );
   }
+
+  // Tutor sections (website TutorBookingsPage)
+  const pendingList = bookings.filter(b => b.status === "pending");
+  const activeList  = bookings.filter(b => ["confirmed", "pending_parent_confirm"].includes(b.status));
+  const pastList    = bookings.filter(b => ["completed", "rejected", "cancelled"].includes(b.status));
+
+  // ── One booking card ──────────────────────────────────────────────────────
+  const renderCard = (b: any) => {
+    const STATUS = isTutor ? TUTOR_STATUS : PARENT_STATUS;
+    const sc     = STATUS[b.status] || { label: b.status, color: MUTED, bg: "#F3F4F6" };
+    const isU    = updating === b.id;
+
+    return (
+      <TouchableOpacity key={b.id} style={s.card} onPress={() => setSelected(b)} activeOpacity={0.85}>
+        {/* Header */}
+        <View style={s.cardTop}>
+          <View style={[s.cardAvatar, { backgroundColor: sc.bg }]}>
+            <Text style={[s.cardAvatarTxt, { color: sc.color }]}>{(b.student?.name || "?").charAt(0)}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.cardName}>{b.student?.name || "Student"}</Text>
+            <Text style={s.cardSub}>
+              {isTutor ? `Parent: ${b.parent?.full_name || "—"}` : `Tutor: ${b.tutor?.full_name || "—"}`}
+            </Text>
+          </View>
+          <View style={[s.statusBadge, { backgroundColor: sc.bg }]}>
+            <Text style={[s.statusTxt, { color: sc.color }]}>{sc.label}</Text>
+          </View>
+        </View>
+
+        {/* Chips */}
+        <View style={s.chipRow}>
+          <View style={s.chip}><Ionicons name="book-outline" size={11} color={MUTED} /><Text style={s.chipTxt}>{subjectLabel(b.subject)}</Text></View>
+          <View style={s.chip}><Ionicons name="people-outline" size={11} color={MUTED} /><Text style={s.chipTxt}>{modeLabel(b.session_mode)}</Text></View>
+          <View style={s.chip}><Ionicons name="cash-outline" size={11} color={MUTED} /><Text style={s.chipTxt}>₱{Number(b.total_amount || 0).toLocaleString()}</Text></View>
+          {!!b.payment_method && (
+            <View style={s.chip}><Ionicons name="card-outline" size={11} color={MUTED} /><Text style={s.chipTxt}>{paymentLabel(b.payment_method)}</Text></View>
+          )}
+        </View>
+
+        <Text style={s.dateText}>Booked {fmtDate(b.created_at)}</Text>
+
+        {/* View Schedule — both roles once the booking has dates (read-only for tutors, as on the website) */}
+        {b.scheduled_date ? (
+          <TouchableOpacity style={s.schedBtn} onPress={() => setScheduleFor(b)}>
+            <Text style={s.schedBtnTxt}>📅 View Schedule</Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={s.schedPending}>⏳ Schedule pending</Text>
+        )}
+
+        {/* TUTOR actions */}
+        {isTutor && b.status === "pending" && (
+          <View style={s.actionRow}>
+            <TouchableOpacity style={[s.actionBtn, s.acceptBtn]} onPress={() => handleAccept(b)} disabled={isU}>
+              {isU ? <ActivityIndicator size="small" color="#fff" />
+                   : <><Ionicons name="checkmark" size={14} color="#fff" /><Text style={s.acceptTxt}>Accept</Text></>}
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.actionBtn, s.rejectBtn]} onPress={() => handleReject(b.id)} disabled={isU}>
+              <Text style={s.rejectTxt}>Reject</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {isTutor && b.status === "confirmed" && (
+          <TouchableOpacity style={s.completeBtn} onPress={() => handleMarkComplete(b.id)} disabled={isU}>
+            {isU ? <ActivityIndicator size="small" color={GREEN} />
+                 : <><Ionicons name="checkmark-circle-outline" size={14} color={GREEN} /><Text style={s.completeTxt}>Mark Session Complete</Text></>}
+          </TouchableOpacity>
+        )}
+
+        {/* PARENT actions */}
+        {isParent && b.status === "pending" && (
+          <TouchableOpacity style={s.cancelBtn} onPress={() => handleParentCancel(b.id)} disabled={isU}>
+            {isU ? <ActivityIndicator size="small" color={CORAL} /> : <Text style={s.cancelTxt}>Cancel Booking</Text>}
+          </TouchableOpacity>
+        )}
+
+        {/* Confirm & Pay — only after tutor marks complete, and only if unpaid (same as website) */}
+        {isParent && b.status === "pending_parent_confirm" && b.payment_status !== "paid" && (
+          <TouchableOpacity style={[s.confirmBtn, { backgroundColor: "#22C55E" }]} onPress={() => openConfirmPay(b)} disabled={isU}>
+            <Ionicons name="card" size={14} color="#fff" />
+            <Text style={s.confirmTxt}>Confirm &amp; Pay</Text>
+          </TouchableOpacity>
+        )}
+
+        {b.payment_status === "paid" && (
+          <View style={s.paidBadge}><Text style={s.paidTxt}>Paid</Text></View>
+        )}
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <View style={s.container}>
@@ -352,6 +461,17 @@ export default function BookingsScreen() {
           {isTutor ? "Manage booking requests from parents." : "View and manage your tutoring session bookings."}
         </Text>
 
+        {toast && (
+          <View style={[s.toast, { backgroundColor: toast.type === "error" ? "#FEE2E2" : "#D1FAE5" }]}>
+            <Text style={[s.toastTxt, { color: toast.type === "error" ? "#DC2626" : "#065F46" }]}>
+              {toast.type === "error" ? "❌ " : "✅ "}{toast.msg}
+            </Text>
+            <TouchableOpacity onPress={() => setToast(null)}>
+              <Ionicons name="close" size={16} color={toast.type === "error" ? "#DC2626" : "#065F46"} />
+            </TouchableOpacity>
+          </View>
+        )}
+
         {bookings.length === 0 ? (
           <View style={s.empty}>
             <Ionicons name="calendar-outline" size={56} color="#D1D5DB" />
@@ -360,158 +480,44 @@ export default function BookingsScreen() {
               {isTutor ? "Booking requests from parents will appear here." : "Inquire a tutor and book a session to get started."}
             </Text>
           </View>
+        ) : isTutor ? (
+          // Website TutorBookingsPage: pending banner + Pending / Active / Past sections
+          <>
+            {pendingList.length > 0 && (
+              <View style={s.pendingBanner}>
+                <Text style={s.pendingBannerTxt}>
+                  ⏳ You have <Text style={{ fontWeight: "800" }}>{pendingList.length}</Text> pending booking request{pendingList.length !== 1 ? "s" : ""} — review and accept or reject below.
+                </Text>
+              </View>
+            )}
+            {([
+              ["⏳ Pending Requests", pendingList],
+              ["✅ Active Bookings",  activeList],
+              ["📋 Past Bookings",    pastList],
+            ] as [string, any[]][]).map(([title, items]) => items.length === 0 ? null : (
+              <View key={title} style={{ marginBottom: 8 }}>
+                <Text style={s.sectionTitle}>{title} ({items.length})</Text>
+                {items.map(renderCard)}
+              </View>
+            ))}
+          </>
         ) : (
-          bookings.map(b => {
-            const STATUS = isTutor ? TUTOR_STATUS : PARENT_STATUS;
-            const sc     = STATUS[b.status] || { label: b.status, color: MUTED, bg: "#F3F4F6" };
-            const isU    = updating === b.id;
-
-            return (
-              <TouchableOpacity key={b.id} style={s.card} onPress={() => setSelected(b)} activeOpacity={0.85}>
-
-                {/* Header */}
-                <View style={s.cardTop}>
-                  <View style={[s.cardAvatar, { backgroundColor: sc.bg }]}>
-                    <Text style={[s.cardAvatarTxt, { color: sc.color }]}>
-                      {(b.student?.name || "?").charAt(0)}
-                    </Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.cardName}>{b.student?.name || "Student"}</Text>
-                    <Text style={s.cardSub}>
-                      {isTutor
-                        ? `Parent: ${b.parent?.full_name || "—"}`
-                        : `Tutor: ${b.tutor?.full_name || "—"}`}
-                    </Text>
-                  </View>
-                  <View style={[s.statusBadge, { backgroundColor: sc.bg }]}>
-                    <Text style={[s.statusTxt, { color: sc.color }]}>{sc.label}</Text>
-                  </View>
-                </View>
-
-                {/* Chips */}
-                <View style={s.chipRow}>
-                  <View style={s.chip}>
-                    <Ionicons name="book-outline" size={11} color={MUTED} />
-                    <Text style={s.chipTxt}>{subjectLabel(b.subject)}</Text>
-                  </View>
-                  <View style={s.chip}>
-                    <Ionicons name="people-outline" size={11} color={MUTED} />
-                    <Text style={s.chipTxt}>{modeLabel(b.session_mode)}</Text>
-                  </View>
-                  <View style={s.chip}>
-                    <Ionicons name="cash-outline" size={11} color={MUTED} />
-                    <Text style={s.chipTxt}>₱{Number(b.total_amount || 0).toLocaleString()}</Text>
-                  </View>
-                  <View style={s.chip}>
-                    <Ionicons name="card-outline" size={11} color={MUTED} />
-                    <Text style={s.chipTxt}>{paymentLabel(b.payment_method)}</Text>
-                  </View>
-                </View>
-
-                <Text style={s.dateText}>Booked {fmtDate(b.created_at)}</Text>
-
-                {/* TUTOR actions */}
-                {isTutor && b.status === "pending" && (
-                  <View style={s.actionRow}>
-                    <TouchableOpacity
-                      style={[s.actionBtn, s.acceptBtn]}
-                      onPress={() => handleAccept(b)}
-                      disabled={isU}
-                    >
-                      {isU ? <ActivityIndicator size="small" color="#fff" />
-                           : <><Ionicons name="checkmark" size={14} color="#fff" /><Text style={s.acceptTxt}>Accept</Text></>}
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[s.actionBtn, s.rejectBtn]}
-                      onPress={() => handleReject(b.id)}
-                      disabled={isU}
-                    >
-                      <Text style={s.rejectTxt}>Reject</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-
-                {isTutor && b.status === "confirmed" && (
-                  <TouchableOpacity
-                    style={s.completeBtn}
-                    onPress={() => handleMarkComplete(b.id)}
-                    disabled={isU}
-                  >
-                    {isU ? <ActivityIndicator size="small" color={GREEN} />
-                         : <><Ionicons name="checkmark-circle-outline" size={14} color={GREEN} /><Text style={s.completeTxt}>Mark Session Complete</Text></>}
-                  </TouchableOpacity>
-                )}
-
-                {/* PARENT actions */}
-                {isParent && b.status === "pending" && (
-                  <TouchableOpacity style={s.cancelBtn} onPress={() => handleParentCancel(b.id)} disabled={isU}>
-                    {isU ? <ActivityIndicator size="small" color={CORAL} />
-                         : <Text style={s.cancelTxt}>Cancel Booking</Text>}
-                  </TouchableOpacity>
-                )}
-
-                {isParent && b.status === "pending_parent_confirm" && (
-                  <TouchableOpacity
-                    style={s.confirmBtn}
-                    onPress={() => { setFeedbackForm({ star_rating: 0, rating_comment: "" }); setConfirmModal(b); }}
-                    disabled={isU}
-                  >
-                    <Ionicons name="checkmark-circle" size={14} color="#fff" />
-                    <Text style={s.confirmTxt}>Confirm &amp; Rate Session</Text>
-                  </TouchableOpacity>
-                )}
-              </TouchableOpacity>
-            );
-          })
+          bookings.map(renderCard)
         )}
       </ScrollView>
 
+      <SessionScheduleModal booking={scheduleFor} onClose={() => setScheduleFor(null)} readOnly={isTutor} />
+
       {/* Detail Modal */}
-      <Modal visible={!!selected} transparent animationType="slide" onRequestClose={() => setSelected(null)}>
-        <View style={s.overlay}>
-          <View style={s.modalBox}>
-            <View style={s.modalHeader}>
-              <Text style={s.modalTitle}>Booking Details</Text>
-              <TouchableOpacity onPress={() => setSelected(null)}>
-                <Ionicons name="close" size={22} color={MUTED} />
-              </TouchableOpacity>
-            </View>
-            {selected && (
-              <ScrollView showsVerticalScrollIndicator={false}>
-                <View style={s.detailGrid}>
-                  {([
-                    ["Student",    `${selected.student?.name || "—"} (Grade ${selected.student?.grade_level})`],
-                    [isTutor ? "Parent" : "Tutor", isTutor ? selected.parent?.full_name : selected.tutor?.full_name],
-                    ["Subject",    subjectLabel(selected.subject)],
-                    ["Mode",       modeLabel(selected.session_mode)],
-                    ["Payment",    paymentLabel(selected.payment_method)],
-                    ["Total",      `₱${Number(selected.total_amount || 0).toLocaleString()}`],
-                    ["Commission", `₱${Number(selected.commission_amount || 0).toLocaleString()}`],
-                    ["Status",     (isTutor ? TUTOR_STATUS : PARENT_STATUS)[selected.status]?.label || selected.status],
-                    ["Booked",     fmtDate(selected.created_at)],
-                  ] as [string, string][]).map(([k, v]) => (
-                    <View key={k} style={s.detailCell}>
-                      <Text style={s.detailKey}>{k}</Text>
-                      <Text style={s.detailVal}>{v || "—"}</Text>
-                    </View>
-                  ))}
-                </View>
-                <TouchableOpacity style={s.closeModalBtn} onPress={() => setSelected(null)}>
-                  <Text style={s.closeModalTxt}>Close</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            )}
-          </View>
-        </View>
-      </Modal>
+      <BookingDetailModal booking={selected} isTutor={isTutor} statusLabel={(st: string) => ((isTutor ? TUTOR_STATUS : PARENT_STATUS)[st]?.label || st)} onClose={() => setSelected(null)} />
+
 
       {/* Parent Confirm + Rate Modal */}
       <Modal visible={!!confirmModal} transparent animationType="slide" onRequestClose={() => !submitting && setConfirmModal(null)}>
         <View style={s.overlay}>
           <View style={s.modalBox}>
             <View style={s.modalHeader}>
-              <Text style={s.modalTitle}>Confirm Session &amp; Rate</Text>
+              <Text style={s.modalTitle}>Confirm &amp; Pay</Text>
               <TouchableOpacity onPress={() => !submitting && setConfirmModal(null)}>
                 <Ionicons name="close" size={22} color={MUTED} />
               </TouchableOpacity>
@@ -526,10 +532,25 @@ export default function BookingsScreen() {
                     {" · "}<Text style={{ fontWeight: "700" }}>{subjectLabel(confirmModal.subject)}</Text>
                   </Text>
                 </View>
+                {/* Payment summary */}
+                <View style={s.payBox}>
+                  {([
+                    ["Amount to pay", `₱${priceOf(confirmModal).toLocaleString("en-PH", { minimumFractionDigits: 2 })}`],
+                    ["Tutor receives (90%)", `₱${(Math.round(priceOf(confirmModal) * 0.9 * 100) / 100).toLocaleString("en-PH", { minimumFractionDigits: 2 })}`],
+                    ["Platform fee (10%)", `₱${(Math.round(priceOf(confirmModal) * 0.1 * 100) / 100).toLocaleString("en-PH", { minimumFractionDigits: 2 })}`],
+                    ["Your wallet balance", parentBalance === null ? "…" : `₱${parentBalance.toLocaleString("en-PH", { minimumFractionDigits: 2 })}`],
+                  ] as [string, string][]).map(([k, v], i) => (
+                    <View key={k} style={[s.payRow, i === 0 && { borderTopWidth: 0 }]}>
+                      <Text style={s.payKey}>{k}</Text>
+                      <Text style={[s.payVal, i === 0 && { color: PRIMARY, fontSize: 16 }]}>{v}</Text>
+                    </View>
+                  ))}
+                </View>
+
                 <View style={s.warningBanner}>
                   <Ionicons name="warning-outline" size={16} color={ORANGE} />
                   <Text style={s.warningTxt}>
-                    Confirming means this session was conducted. Please rate the tutor honestly.
+                    Confirming means this session was conducted. The amount above will be paid from your wallet. Please rate the tutor honestly.
                   </Text>
                 </View>
                 <Text style={s.fieldLabel}>Rate the Tutor <Text style={{ color: CORAL }}>*</Text></Text>
@@ -548,18 +569,32 @@ export default function BookingsScreen() {
                   multiline
                   editable={!submitting}
                 />
+                {payError !== "" && (
+                  <View style={s.payErrBox}>
+                    <Text style={s.payErrTxt}>{payError}</Text>
+                    {payError.startsWith("Insufficient") && (
+                      <TouchableOpacity
+                        style={s.goWalletBtn}
+                        onPress={() => { setConfirmModal(null); router.push("/(drawer)/wallet" as any); }}
+                      >
+                        <Text style={s.goWalletTxt}>Go to Wallet →</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+
                 <View style={s.modalFooterRow}>
                   <TouchableOpacity style={s.modalCancelBtn} onPress={() => setConfirmModal(null)} disabled={submitting}>
                     <Text style={s.modalCancelTxt}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[s.modalConfirmBtn, (submitting || feedbackForm.star_rating === 0) && { opacity: 0.5 }]}
-                    onPress={handleConfirmComplete}
+                    style={[s.modalConfirmBtn, { backgroundColor: "#22C55E" }, (submitting || feedbackForm.star_rating === 0) && { opacity: 0.5 }]}
+                    onPress={handleConfirmAndPay}
                     disabled={submitting || feedbackForm.star_rating === 0}
                   >
                     {submitting
                       ? <ActivityIndicator size="small" color="#fff" />
-                      : <><Ionicons name="checkmark" size={16} color="#fff" /><Text style={s.modalConfirmTxt}>Confirm &amp; Submit</Text></>
+                      : <><Ionicons name="card" size={16} color="#fff" /><Text style={s.modalConfirmTxt}>Confirm &amp; Pay</Text></>
                     }
                   </TouchableOpacity>
                 </View>
@@ -573,7 +608,7 @@ export default function BookingsScreen() {
 }
 
 const s = StyleSheet.create({
-  container:    { flex: 1, backgroundColor: BG },
+  container:    { flex: 1, backgroundColor: "transparent" },
   content:      { padding: 16, paddingBottom: 80 },
   centered:     { flex: 1, justifyContent: "center", alignItems: "center" },
   heading:      { fontSize: 22, fontWeight: "800", color: DARK, marginBottom: 4 },
@@ -631,4 +666,28 @@ const s = StyleSheet.create({
   modalCancelTxt: { fontSize: 14, color: MUTED, fontWeight: "600" },
   modalConfirmBtn:{ flex: 2, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 14, borderRadius: 12, backgroundColor: PRIMARY },
   modalConfirmTxt:{ color: "#fff", fontSize: 14, fontWeight: "700" },
+
+  // Tutor sections
+  pendingBanner:    { backgroundColor: "#FEF9C3", borderWidth: 1, borderColor: "#FDE68A", borderRadius: 12, padding: 12, marginBottom: 16 },
+  pendingBannerTxt: { fontSize: 13, color: "#92400E", lineHeight: 19 },
+  sectionTitle:     { fontSize: 15, fontWeight: "800", color: DARK, marginBottom: 10 },
+
+  // View Schedule
+  schedBtn:    { alignSelf: "flex-start", marginTop: 10, backgroundColor: "#EFF6FF", borderWidth: 1, borderColor: PRIMARY + "30", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },
+  schedBtnTxt:  { fontSize: 12, fontWeight: "700", color: PRIMARY },
+  schedPending: { marginTop: 8, fontSize: 11, fontWeight: "700", color: "#F59E0B" },
+
+  // Confirm & Pay
+  toast:      { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 12, padding: 14, marginBottom: 16 },
+  toastTxt:    { flex: 1, fontSize: 13, fontWeight: "600" },
+  paidBadge:   { alignSelf: "flex-start", marginTop: 10, paddingHorizontal: 20, paddingVertical: 5, borderRadius: 20, backgroundColor: "#D1FAE5" },
+  paidTxt:     { fontSize: 13, fontWeight: "700", color: "#065F46" },
+  payBox:      { backgroundColor: "#F9FAFB", borderRadius: 12, borderWidth: 1, borderColor: BORDER, paddingHorizontal: 14, marginBottom: 12 },
+  payRow:      { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 10, borderTopWidth: 1, borderTopColor: BORDER },
+  payKey:      { fontSize: 12, color: MUTED, fontWeight: "600" },
+  payVal:      { fontSize: 13, fontWeight: "800", color: DARK },
+  payErrBox:   { backgroundColor: "#FEE2E2", borderRadius: 10, padding: 12, marginTop: 8 },
+  payErrTxt:   { fontSize: 12, color: "#DC2626", fontWeight: "600" },
+  goWalletBtn: { marginTop: 8, alignSelf: "flex-start", backgroundColor: PRIMARY, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
+  goWalletTxt: { color: "#fff", fontSize: 12, fontWeight: "700" },
 });
